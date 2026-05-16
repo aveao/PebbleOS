@@ -182,7 +182,7 @@
     }, {
         "name": "StatusBarLayer",
         "size_2x": 112,
-        "size_3x_padding": 80,
+        "size_3x_padding": 72,
         "size_3x": 200,
         "dependencies": ["Layer"],
         "_comment": "Generously padded because it's not feature complete yet"

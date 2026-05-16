@@ -29,24 +29,33 @@ typedef struct StatusBarTextFormat {
 
 static ALWAYS_INLINE StatusBarTextFormat prv_get_text_format(
     const StatusBarLayerConfig *config) {
-  const PlatformType platform = process_manager_current_platform();
-  const bool bold = config && (config->mode == StatusBarLayerModeClock);
-  const char *font_key = PBL_PLATFORM_SWITCH(platform,
-      /*aplite*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
-      /*basalt*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
-      /*chalk*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
-      /*diorite*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
-      /*emery*/ bold ? FONT_KEY_GOTHIC_18_BOLD : FONT_KEY_GOTHIC_18,
-      /*flint*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
-      /*gabbro*/ bold ? FONT_KEY_GOTHIC_18_BOLD : FONT_KEY_GOTHIC_18);
+  GFont font;
+  if (config && config->font_override) {
+    font = config->font_override;
+  } else {
+    const PlatformType platform = process_manager_current_platform();
+    const bool bold = config && (config->mode == StatusBarLayerModeClock);
+    const char *font_key = PBL_PLATFORM_SWITCH(platform,
+        /*aplite*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
+        /*basalt*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
+        /*chalk*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
+        /*diorite*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
+        /*emery*/ bold ? FONT_KEY_GOTHIC_18_BOLD : FONT_KEY_GOTHIC_18,
+        /*flint*/ bold ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14,
+        /*gabbro*/ bold ? FONT_KEY_GOTHIC_18_BOLD : FONT_KEY_GOTHIC_18);
+    font = fonts_get_system_font(font_key);
+  }
   return (StatusBarTextFormat) {
     .overflow_mode = GTextOverflowModeTrailingEllipsis,
     .text_alignment = GTextAlignmentCenter,
-    .font = fonts_get_system_font(font_key),
+    .font = font,
   };
 }
 
-static int prv_height(void) {
+static int prv_height(const StatusBarLayerConfig *config) {
+  if (config && config->height_override > 0) {
+    return config->height_override;
+  }
   const PlatformType platform = process_manager_current_platform();
   return _STATUS_BAR_LAYER_HEIGHT(platform);
 }
@@ -56,7 +65,8 @@ static void prv_status_bar_layer_update_clock(StatusBarLayer *status_bar_layer);
 static void prv_tick_timer_handler_cb(PebbleEvent *e, void *cb_data);
 
 static void prv_status_bar_property_changed(struct Layer *layer) {
-  const int16_t height = prv_height();
+  StatusBarLayer *sbl = (StatusBarLayer *)layer;
+  const int16_t height = prv_height(&sbl->config);
   if (layer->frame.size.h != height) {
     layer->frame.size.h = height;
   }
@@ -94,7 +104,8 @@ void status_bar_layer_init(StatusBarLayer *status_bar_layer) {
   GContext *ctx = graphics_context_get_current_context();
   const GSize current_framebuffer_size = graphics_context_get_framebuffer_size(ctx);
 
-  layer_init(&status_bar_layer->layer, &GRect(0, 0, current_framebuffer_size.w, prv_height()));
+  layer_init(&status_bar_layer->layer,
+             &GRect(0, 0, current_framebuffer_size.w, prv_height(NULL)));
   status_bar_layer->layer.update_proc = prv_status_bar_layer_render;
   status_bar_layer->layer.property_changed_proc = prv_status_bar_property_changed;
 
@@ -260,6 +271,17 @@ StatusBarLayerSeparatorMode status_bar_layer_get_separator_mode(
   return status_bar_layer->config.separator.mode;
 }
 
+void status_bar_layer_set_appearance_override(StatusBarLayer *status_bar_layer,
+                                              GFont font, int16_t height) {
+  PBL_ASSERTN(status_bar_layer);
+  status_bar_layer->config.font_override = font;
+  status_bar_layer->config.height_override = height;
+  GRect frame = status_bar_layer->layer.frame;
+  frame.size.h = prv_height(&status_bar_layer->config);
+  layer_set_frame(&status_bar_layer->layer, &frame);
+  layer_mark_dirty(&status_bar_layer->layer);
+}
+
 //*****************************************************************************
 //* INTERNAL FUNCTIONS
 //*****************************************************************************
@@ -304,8 +326,15 @@ static void prv_status_bar_layer_render_text(GContext *ctx,
   const int16_t width = 2 * MAX(left_width, right_width);
   // starting point of text needs to be half width left of the center.
   const int16_t x_start = center - width / 2;
-  // Position the text vertically offset from the bottom of the status bar
-  const int16_t y = min_y + max_y - (2 * STATUS_BAR_LAYER_SEPARATOR_Y_OFFSET) - font_height;
+  int16_t y;
+  if (config && (config->font_override || config->height_override > 0)) {
+    // Center vertically; the font_h/4 - 1 offset compensates for Gothic's top
+    // leading so the visible glyph appears optically centered in the bar.
+    y = min_y + (max_y - min_y - font_height) / 2 - (font_height - 4) / 4;
+  } else {
+    // Default: bottom-aligned with separator-area padding.
+    y = min_y + max_y - (2 * STATUS_BAR_LAYER_SEPARATOR_Y_OFFSET) - font_height;
+  }
   graphics_draw_text(ctx,
                      data,
                      font,
@@ -355,7 +384,7 @@ void status_bar_layer_render(GContext *ctx, const GRect *bounds, StatusBarLayerC
   // find width of info text
   GSize max_used_size = graphics_text_layout_get_max_used_size(ctx, config->info_text_buffer,
                                          info_font,
-                                         GRect(0, 0, 100, prv_height()),
+                                         GRect(0, 0, 100, prv_height(config)),
                                          GTextOverflowModeTrailingEllipsis,
                                          GTextAlignmentCenter,
                                          NULL);

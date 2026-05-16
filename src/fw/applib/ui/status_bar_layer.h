@@ -3,6 +3,7 @@
 
 #pragma once
 #include "applib/app_timer.h"
+#include "applib/fonts/fonts.h"
 #include "applib/ui/animation.h"
 #include "applib/graphics/gtypes.h"
 #include "layer.h"
@@ -80,6 +81,8 @@ typedef struct StatusBarLayerConfig {
   GColor background_color;                          // default:GColorBlack
   StatusBarLayerSeparator separator;                // default:StatusBarLayerSeparatorModeDotted
   StatusBarLayerMode mode;                          // default:StatusBarLayerModeClock
+  GFont font_override;                              // NULL = use platform default
+  int16_t height_override;                          // 0 = use platform default
 } StatusBarLayerConfig;
 
 //! renders a status bar as described into a given rectangle
@@ -210,6 +213,16 @@ void status_bar_layer_reset_info(StatusBarLayer *status_bar_layer);
 //! @param mode Determines the separator mode
 void status_bar_layer_set_separator_mode(StatusBarLayer *status_bar_layer,
                                          StatusBarLayerSeparatorMode mode);
+
+//! Override the font and bar height used for this StatusBarLayer instance.
+//! When an override is in effect the title text is vertically centered using a
+//! font-size-aware formula instead of the default bottom-aligned-with-separator
+//! position. Pass NULL/0 to clear the respective override.
+//! @param status_bar_layer The StatusBarLayer to configure
+//! @param font Font to draw the title text with, or NULL to use the platform default
+//! @param height New layer height in pixels, or 0 to use the platform default
+void status_bar_layer_set_appearance_override(StatusBarLayer *status_bar_layer,
+                                              GFont font, int16_t height);
 
 //! Gets the mode of the StatusBarLayer separator
 //! @param status_bar_layer The StatusBarLayer of which to get the separator mode
