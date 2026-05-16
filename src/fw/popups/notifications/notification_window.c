@@ -8,6 +8,16 @@
 
 #include "applib/fonts/fonts.h"
 #include "applib/ui/action_button.h"
+
+// Height of the status bar at the top of the notification window. Emery overrides
+// the default to make room for the larger GOTHIC_24 timestamp; other platforms keep
+// the platform default. Used for swap-layer/peek-layer positioning that would
+// otherwise reference STATUS_BAR_LAYER_HEIGHT directly.
+#if defined(PLATFORM_OBELIX) || defined(PLATFORM_QEMU_EMERY)
+#define NOTIF_STATUS_BAR_HEIGHT 26
+#else
+#define NOTIF_STATUS_BAR_HEIGHT STATUS_BAR_LAYER_HEIGHT
+#endif
 #include "applib/ui/action_menu_window.h"
 #include "applib/ui/app_window_stack.h"
 #include "applib/ui/dialogs/dialog.h"
@@ -337,7 +347,7 @@ static void prv_hide_peek_layer(void *context) {
 
   // get the frame of the swap_layer and set its destination
   const GRect *swap_frame = &data->swap_layer.layer.frame;
-  int16_t swap_frame_animation_dy = STATUS_BAR_LAYER_HEIGHT - swap_frame->origin.y;
+  int16_t swap_frame_animation_dy = NOTIF_STATUS_BAR_HEIGHT - swap_frame->origin.y;
 
   // duration of animation of both peek layer and swap layer moving up to the top
   int16_t peek_frame_animation_dy = swap_frame_animation_dy;
@@ -362,7 +372,7 @@ static void prv_hide_peek_layer(void *context) {
   PeekLayer *peek_layer = data->peek_layer;
   GRect frame = peek_layer->layer.frame;
   frame.origin.x = (frame.size.w / 2) - (NOTIFICATION_TINY_RESOURCE_SIZE.w / 2);
-  frame.origin.y = CARD_ICON_UPPER_PADDING + STATUS_BAR_LAYER_HEIGHT;
+  frame.origin.y = CARD_ICON_UPPER_PADDING + NOTIF_STATUS_BAR_HEIGHT;
   frame.size = NOTIFICATION_TINY_RESOURCE_SIZE;
 
   const bool align_in_frame = true;
@@ -1265,7 +1275,7 @@ static void prv_init_notification_window(bool is_modal) {
   const GRect *window_frame = &root_layer->frame;
 
   // prepare the swap layer frame using notification_layout values including the status bar
-  const GRect swap_frame = GRect(0, STATUS_BAR_LAYER_HEIGHT, window_frame->size.w,
+  const GRect swap_frame = GRect(0, NOTIF_STATUS_BAR_HEIGHT, window_frame->size.w,
                                  LAYOUT_HEIGHT + LAYOUT_ARROW_HEIGHT);
 
   SwapLayer *swap_layer = &data->swap_layer;
@@ -1288,6 +1298,10 @@ static void prv_init_notification_window(bool is_modal) {
   status_bar_layer_set_colors(status_layer, PBL_IF_RECT_ELSE(GColorBlack, GColorClear),
                               PBL_IF_RECT_ELSE(GColorWhite, GColorBlack));
   status_bar_layer_set_separator_mode(status_layer, StatusBarLayerSeparatorModeNone);
+#if defined(PLATFORM_OBELIX) || defined(PLATFORM_QEMU_EMERY)
+  status_bar_layer_set_appearance_override(
+      status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24), NOTIF_STATUS_BAR_HEIGHT);
+#endif
   layer_add_child(root_layer, (Layer *)status_layer);
 
   // bubble on right for action button
