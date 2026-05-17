@@ -1300,7 +1300,7 @@ static void prv_init_notification_window(bool is_modal) {
   status_bar_layer_set_separator_mode(status_layer, StatusBarLayerSeparatorModeNone);
 #if defined(PLATFORM_OBELIX) || defined(PLATFORM_QEMU_EMERY)
   status_bar_layer_set_appearance_override(
-      status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24), NOTIF_STATUS_BAR_HEIGHT);
+      status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), NOTIF_STATUS_BAR_HEIGHT);
 #endif
   layer_add_child(root_layer, (Layer *)status_layer);
 
