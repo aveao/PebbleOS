@@ -157,7 +157,7 @@ NVIC value of 255. */
 #define configLIBRARY_KERNEL_INTERRUPT_PRIORITY 15
 
 
-#if MICRO_FAMILY_SF32LB52
+#ifdef CONFIG_SOC_SF32LB52
 #define xPortSysTickHandler RTOS_SysTick_Handler
 #else
 #define xPortSysTickHandler SysTick_Handler
@@ -168,10 +168,10 @@ NVIC value of 255. */
 
 /* Set this to add error checking code to the entry of each FreeRTOS function to ensure that the
    caller is in the correct state to make the call (ISR priority, critical section, etc.) */
-#if !RELEASE
-#define configCHECK_CALL_SAFETY 1
-#else
+#ifdef CONFIG_RELEASE
 #define configCHECK_CALL_SAFETY 0
+#else
+#define configCHECK_CALL_SAFETY 1
 #endif
 
 /*-----------------------------------------------------------

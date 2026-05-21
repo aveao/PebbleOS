@@ -95,16 +95,6 @@ def options(opt):
         help="Use whatever CC is in the environment as our compiler",
     )
     opt.add_option(
-        "--beta",
-        action="store_true",
-        help="Build in beta mode (--beta and --release are mutually exclusive)",
-    )
-    opt.add_option(
-        "--release",
-        action="store_true",
-        help="Build in release mode (--beta and --release are mutually exclusive)",
-    )
-    opt.add_option(
         "--fat_firmware",
         action="store_true",
         help="build in GDB mode WITH logs; requires 1M of onbaord flash",
@@ -152,11 +142,7 @@ def configure(conf):
 
     # Memfault compact logs require GNU ##__VA_ARGS__ comma-elision;
     # use -std=gnu11 when Memfault is enabled, otherwise -std=c11.
-    c_std = (
-        "-std=gnu11"
-        if getattr(conf.env, "memfault_needs_gnu_extensions", False)
-        else "-std=c11"
-    )
+    c_std = "-std=gnu11" if conf.env.CONFIG_MEMFAULT else "-std=c11"
     conf.env.append_value(
         "CFLAGS",
         [
@@ -271,22 +257,22 @@ Or re-configure with the --relax_toolchain_restrictions option. """
             ]
 
     cpu_fpu = None
-    if conf.env.MICRO_FAMILY == "NRF52":
+    if conf.env.CONFIG_SOC_NRF52:
         args += ["-mcpu=cortex-m4"]
         cpu_fpu = "fpv4-sp-d16"
-    elif conf.env.MICRO_FAMILY == "SF32LB52":
+    elif conf.env.CONFIG_SOC_SF32LB52:
         args += ["-mcpu=star-mc1"]
         cpu_fpu = "fpv5-sp-d16"
-    elif conf.env.MICRO_FAMILY == "QEMU_PEBBLE_ARMCM4":
+    elif conf.env.CONFIG_QEMU and conf.env.CONFIG_CORTEX_M4:
         args += ["-mcpu=cortex-m4"]
         args += ["-Dsniprintf=snprintf"]
         args += ["-D_USE_LONG_TIME_T"]
-    elif conf.env.MICRO_FAMILY == "QEMU_PEBBLE_ARMCM33":
+    elif conf.env.CONFIG_QEMU and conf.env.CONFIG_CORTEX_M33:
         args += ["-mcpu=cortex-m33+nofp+nodsp"]
         args += ["-Dsniprintf=snprintf"]
         args += ["-D_USE_LONG_TIME_T"]
     # QEMU does not have FPU
-    if conf.env.QEMU:
+    if conf.env.CONFIG_QEMU:
         cpu_fpu = None
 
     if cpu_fpu:
@@ -304,16 +290,8 @@ Or re-configure with the --relax_toolchain_restrictions option. """
     conf.env.SHLIB_MARKER = None
     conf.env.STLIB_MARKER = None
 
-    if conf.options.release and conf.options.beta:
-        raise RuntimeError(
-            "--beta and --release are mutually exclusive and cannot be used together"
-        )
-
     # Set optimization level
-    if conf.options.beta:
-        optimize_flags = "-Os"
-        print("Beta mode")
-    elif conf.options.release:
+    if conf.env.CONFIG_RELEASE:
         optimize_flags = "-Os"
         print("Release mode")
     elif conf.options.fat_firmware:

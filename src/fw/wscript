@@ -74,7 +74,6 @@ def options(opt):
 def configure(conf):
     conf.load('binary_header')
     conf.recurse('applib')
-    conf.recurse('soc')
 
     if conf.options.sdkshell:
         conf.env.NORMAL_SHELL = 'sdk'
@@ -94,7 +93,7 @@ def configure(conf):
 
 def _generate_memory_layout(bld):
 
-    if bld.is_qemu():
+    if bld.env.CONFIG_QEMU:
         ldscript_template = bld.path.find_node('qemu_flash_fw.ld.template')
     elif bld.is_asterix():
         ldscript_template = bld.path.find_node('nrf52840_flash_fw.ld.template')
@@ -102,12 +101,12 @@ def _generate_memory_layout(bld):
         ldscript_template = bld.path.find_node('sf32lb52_flash_fw.ld.template')
 
     # Determine sizes so we can later calculate FLASH_LENGTH_*
-    if bld.env.MICRO_FAMILY.startswith('QEMU_PEBBLE'):
+    if bld.env.CONFIG_QEMU:
         flash_size = 4 * 1024 * 1024
         offset_size = 0
         fw_max_size = flash_size
 
-    elif bld.env.MICRO_FAMILY == 'SF32LB52':
+    elif bld.env.CONFIG_SOC_SF32LB52:
         flash_size = 32 * 1024 * 1024
         ptable_size = 64 * 1024
         bootloader_size = 64 * 1024
@@ -124,7 +123,7 @@ def _generate_memory_layout(bld):
             offset_size = offset_size
             fw_max_size = slot_size
 
-    elif bld.env.MICRO_FAMILY == 'NRF52':
+    elif bld.env.CONFIG_SOC_NRF52:
         # Bootloader
         offset_size = 32 * 1024
         flash_size = 1024 * 1024
@@ -133,23 +132,23 @@ def _generate_memory_layout(bld):
         else:
             fw_max_size = flash_size
 
-    if bld.env.QEMU:
+    if bld.env.CONFIG_QEMU:
         flash_size = 4 * 1024 * 1024
         fw_max_size = flash_size
 
-    if bld.env.MICRO_FAMILY.startswith('QEMU_PEBBLE'):
+    if bld.env.CONFIG_QEMU:
         flash_origin = 0x00000000
     elif bld.env.FLASH_ITCM:
         flash_origin = 0x00200000
-    elif bld.env.MICRO_FAMILY == 'NRF52':
+    elif bld.env.CONFIG_SOC_NRF52:
         flash_origin = 0x00000000
-    elif bld.env.MICRO_FAMILY == 'SF32LB52':
+    elif bld.env.CONFIG_SOC_SF32LB52:
         flash_origin = 0x12000000
     else:
         flash_origin = 0x08000000
 
     firmware_offset = 0
-    if bld.env.MICRO_FAMILY == 'SF32LB52':
+    if bld.env.CONFIG_SOC_SF32LB52:
       firmware_offset = 4096
 
     bld.env.FIRMWARE_OFFSET = firmware_offset
@@ -196,37 +195,19 @@ def _generate_memory_layout(bld):
     # hardware capabilities watch model itself - i.e. chalk vs basalt). We want to define
     # APP_RAM_*X_SIZE macros for each app execution environment supported by the model so we
     # don't need to hard-code these in the FW itself.
-    if bld.is_asterix():
-        app_ram_size_2x = APP_RAM_SIZES['aplite']
-        app_ram_size_3x = APP_RAM_SIZES['aplite']
-        app_ram_size_4x = APP_RAM_SIZES['flint']
-        retained_size = 256
-        total_ram = (0x20000000 + retained_size, 256 * 1024 - retained_size)
-    elif bld.is_qemu_emery():
-        app_ram_size_2x = APP_RAM_SIZES['aplite']
-        app_ram_size_3x = APP_RAM_SIZES['basalt']
-        app_ram_size_4x = APP_RAM_SIZES['emery']
-        # Match obelix hardware (511K) to exactly emulate the real platform
-        total_ram = (0x20000000, (512 - 1) * 1024)
-    elif bld.is_qemu_flint():
-        app_ram_size_2x = APP_RAM_SIZES['aplite']
-        app_ram_size_3x = APP_RAM_SIZES['aplite']
-        app_ram_size_4x = APP_RAM_SIZES['flint']
-        # QEMU flint: 256KB RAM (matching asterix)
-        total_ram = (0x20000000, 256 * 1024)
-    elif bld.is_qemu_gabbro():
-        app_ram_size_2x = APP_UNSUPPORTED
-        app_ram_size_3x = APP_RAM_SIZES['chalk']
-        app_ram_size_4x = APP_RAM_SIZES['gabbro']
-        # Match getafix hardware (511K) to exactly emulate the real platform
-        total_ram = (0x20000000, (512 - 1) * 1024)
-    elif bld.is_obelix():
+    if bld.env.CONFIG_PLATFORM_EMERY:
         app_ram_size_2x = APP_RAM_SIZES['aplite']
         app_ram_size_3x = APP_RAM_SIZES['basalt']
         app_ram_size_4x = APP_RAM_SIZES['emery']
         # We have 512K of SRAM, last 1K reserved for LCPU IPC
         total_ram = (0x20000000, (512 - 1) * 1024)
-    elif bld.is_getafix():
+    elif bld.env.CONFIG_PLATFORM_FLINT:
+        app_ram_size_2x = APP_RAM_SIZES['aplite']
+        app_ram_size_3x = APP_RAM_SIZES['aplite']
+        app_ram_size_4x = APP_RAM_SIZES['flint']
+        retained_size = 256
+        total_ram = (0x20000000 + retained_size, 256 * 1024 - retained_size)
+    elif bld.env.CONFIG_PLATFORM_GABBRO:
         app_ram_size_2x = APP_UNSUPPORTED
         app_ram_size_3x = APP_RAM_SIZES['chalk']
         app_ram_size_4x = APP_RAM_SIZES['gabbro']
@@ -283,7 +264,7 @@ def _generate_memory_layout(bld):
 
 
 def _link_firmware(bld, sources):
-    if bld.is_qemu():
+    if bld.env.CONFIG_QEMU:
         if bld.is_qemu_gabbro():
             # qemu_gabbro needs the getafix round display row info data
             sources += ['board/displays/display_getafix.c']
@@ -328,14 +309,14 @@ def _link_firmware(bld, sources):
             'upng']
     uses.extend(bld.env.FW_APPS)
 
-    if bld.env.memfault:
+    if bld.env.CONFIG_MEMFAULT:
         fw_linkflags.append('-Wl,--require-defined=g_memfault_build_id')
         uses.append('memfault')
 
     ldscript = _generate_memory_layout(bld)
 
     ldscripts = [ldscript, 'fw_common.ld']
-    if bld.env.memfault:
+    if bld.env.CONFIG_MEMFAULT:
         ldscripts.append(bld.srcnode.find_node(
             'third_party/memfault/port/memfault_compact_log.ld'))
 
@@ -392,7 +373,7 @@ def _link_firmware(bld, sources):
 def _get_mfg_paths(bld):
     """Return a list of directories we want to build to support manufacturing on a platform"""
 
-    if bld.is_qemu():
+    if bld.env.CONFIG_QEMU:
         return ('mfg/qemu',)
     elif bld.is_asterix():
         return ('mfg/asterix',)
@@ -410,7 +391,7 @@ def _get_dbg_paths(bld):
 
 def _get_comm_sources(bld, is_recovery):
     excl = []
-    if bld.env.QEMU:
+    if bld.env.CONFIG_QEMU:
         excl.append('comm/internals/profiles/ispp.c')
 
     if is_recovery:
@@ -552,7 +533,7 @@ def _build_normal(bld):
         if bld.is_getafix():
             excludes.append('apps/watch/tictoc/default')
             excludes.append('apps/watch/tictoc/bw')
-        elif bld.is_asterix() or bld.is_qemu_flint():
+        elif bld.env.CONFIG_SCREEN_COLOR_DEPTH_BITS == 1:
             excludes.append('apps/watch/tictoc/default')
             excludes.append('apps/watch/tictoc/round')
         else:
@@ -610,12 +591,12 @@ def build(bld):
                      'idl_includes',
                      'nanopb_includes']
 
-    if bld.options.memfault:
+    if bld.env.CONFIG_MEMFAULT:
         fw_includes_use.append('memfault_includes')
 
-    if bld.env.MICRO_FAMILY.startswith('NRF'):
+    if bld.env.CONFIG_SOC_NRF52:
         fw_includes_use.append('hal_nordic')
-    elif bld.env.MICRO_FAMILY.startswith('SF32LB'):
+    elif bld.env.CONFIG_SOC_SF32LB52:
         fw_includes_use.append('hal_sifli')
 
     bld(export_includes=['.',
@@ -626,7 +607,7 @@ def build(bld):
 
     if bld.variant == 'applib':
         bld.set_env(bld.all_envs['local'])
-        bld.env.DEFINES.extend(['UNITTEST', 'SCREEN_COLOR_DEPTH_BITS=8',
+        bld.env.DEFINES.extend(['UNITTEST', 'CONFIG_SCREEN_COLOR_DEPTH_BITS=8',
                                 'DISP_COLS=144', 'DISP_ROWS=168',
                                 'DISPLAY_FRAMEBUFFER_BYTES=%d' % (144 * 168),
                                 'PBL_COLOR', 'PBL_RECT'])

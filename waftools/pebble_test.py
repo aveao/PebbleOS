@@ -398,7 +398,29 @@ def add_clar_test(
     platform_defines += [
         "PLATFORM_" + platform.upper(),
         'PLATFORM_NAME="%s"' % platform,
-    ] + ["SCREEN_COLOR_DEPTH_BITS=%d" % bitdepth]
+    ] + ["CONFIG_SCREEN_COLOR_DEPTH_BITS=%d" % bitdepth]
+
+    # flash_region.h selects a per-chip header from CONFIG_FLASH_*. Tests
+    # don't load a board defconfig, so inject the right one based on which
+    # flash chip the simulated platform expects.
+    test_flash_chip = {
+        "asterix": "CONFIG_FLASH_GD25LQ255E=1",
+        "obelix": "CONFIG_FLASH_GD25Q256E=1",
+        "gabbro": "CONFIG_FLASH_GD25Q256E=1",
+    }
+    if platform in test_flash_chip:
+        platform_defines.append(test_flash_chip[platform])
+
+    # platform.h derives PBL_PLATFORM_TYPE_CURRENT from CONFIG_PLATFORM_*.
+    # Tests don't load a board defconfig, so map the test platform to the
+    # SDK-level CONFIG_PLATFORM_* the production code expects.
+    test_sdk_platform = {
+        "asterix": "CONFIG_PLATFORM_FLINT=1",
+        "obelix": "CONFIG_PLATFORM_EMERY=1",
+        "gabbro": "CONFIG_PLATFORM_GABBRO=1",
+    }
+    if platform in test_sdk_platform:
+        platform_defines.append(test_sdk_platform[platform])
 
     # Production code (e.g. framebuffer.c, gbitmap.c) selects round-display
     # behaviour from the board-level PLATFORM_<BOARD> defines (PLATFORM_GETAFIX,

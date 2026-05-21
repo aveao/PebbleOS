@@ -284,11 +284,11 @@ extern void command_analytics_heartbeat(void);
 
 extern void command_console_disable_rx(const char *seconds_str);
 
-#if MICRO_FAMILY_SF32LB52
+#ifdef CONFIG_SOC_SF32LB52
 extern void command_force_deepwfi(const char *arg);
 #endif
 
-#if !defined(RELEASE) && defined(CONFIG_DISPLAY_JDI_SF32LB)
+#if !defined(CONFIG_RELEASE) && defined(CONFIG_DISPLAY_JDI_SF32LB)
 extern void command_display_drop_complete(void);
 #endif
 
@@ -325,9 +325,9 @@ static const Command s_prompt_commands[] = {
   { "bt disc stop", command_bt_disc_stop, 0 },
   { "timezone clear", command_timezone_clear, 0 },
   { "battery status", command_print_battery_status, 0 },
-#ifndef RELEASE
+#ifndef CONFIG_RELEASE
   { "audit delay", command_audit_delay_us, 0 },
-#if !MICRO_FAMILY_SF32LB52
+#ifndef CONFIG_SOC_SF32LB52
   { "enter stop", command_enter_stop, 0},
 #endif
 #endif
@@ -344,7 +344,7 @@ static const Command s_prompt_commands[] = {
 #ifndef RECOVERY_FW
   { "temp read",  command_temperature_read, 0 },
   { "als read", command_als_read, 0},
-#ifndef RELEASE
+#ifndef CONFIG_RELEASE
   { "litter pfs", command_litter_filesystem, 2 },
 #endif
 #endif
@@ -619,10 +619,10 @@ static const Command s_prompt_commands[] = {
 
   { "vibe", command_vibe_ctl, 1 },
   { "console disable rx", command_console_disable_rx, 1 },
-#if MICRO_FAMILY_SF32LB52
+#ifdef CONFIG_SOC_SF32LB52
   { "force deepwfi", command_force_deepwfi, 1 },
 #endif
-#if !defined(RELEASE) && defined(CONFIG_DISPLAY_JDI_SF32LB)
+#if !defined(CONFIG_RELEASE) && defined(CONFIG_DISPLAY_JDI_SF32LB)
   { "display drop_complete", command_display_drop_complete, 0 },
 #endif
 

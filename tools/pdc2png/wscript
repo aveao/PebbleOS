@@ -65,11 +65,13 @@ def build(bld):
     bld.program(source=sources,
                 target=output,
                 includes=includes,
-                defines=['UNITTEST', 'SCREEN_COLOR_DEPTH_BITS=8',
+                defines=['UNITTEST', 'CONFIG_SCREEN_COLOR_DEPTH_BITS=8',
                          # TODO: PBL-21014 Support arbitrary display sizes
                          'DISP_COLS=144', 'DISP_ROWS=168',
                          'DISPLAY_FRAMEBUFFER_BYTES=%d' % (144 * 168),
                          'PBL_COLOR', 'PBL_RECT', 'PLATFORM_OBELIX=1',
+                         'CONFIG_PLATFORM_EMERY=1',
+                         'CONFIG_FLASH_GD25Q256E=1',
                          'PBI2PNG_EXE="../../tools/pbi2png.py"'],
                 env=pdc2png_env)
 

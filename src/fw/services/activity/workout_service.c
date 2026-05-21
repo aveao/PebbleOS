@@ -210,21 +210,22 @@ T_STATIC void prv_abandoned_notification_timer_callback(void *unused) {
 
 // ---------------------------------------------------------------------------------------
 T_STATIC void prv_workout_timer_cb(void *unused) {
-  if (!workout_service_is_workout_ongoing()) {
+  // This runs on the NewTimer task, which has a watchdog. The workout mutex
+  // can be held by paths that block on flash (e.g. stop_workout pushing the
+  // session notification), so a blocking lock here can trip the watchdog and
+  // reboot the watch. The cb is purely advisory (duration tick / HR aging),
+  // so if the lock is contended just skip this tick — the next one catches up.
+  if (!mutex_lock_recursive_with_timeout(s_workout_data.s_workout_mutex, 0)) {
     return;
   }
 
-  prv_lock();
-  {
-    // Update the duration
+  if (s_workout_data.current_workout) {
     prv_update_duration();
 
-    // Check to make sure our HR sample is still valid
     const time_t now_ts = time_get_uptime_seconds();
     const time_t age_hr_s = now_ts - s_workout_data.current_workout->current_bpm_timestamp_ts;
     if (s_workout_data.current_workout->current_bpm != 0 &&
         age_hr_s >= WORKOUT_HR_READING_TS_EXPIRE) {
-      // Reset HR reading. It has expired
       prv_reset_hr_data();
     }
   }
@@ -233,27 +234,25 @@ T_STATIC void prv_workout_timer_cb(void *unused) {
 
 // ---------------------------------------------------------------------------------------
 void workout_service_health_event_handler(PebbleHealthEvent *event) {
-  if (!workout_service_is_workout_ongoing()) {
-    return;
-  }
-
   prv_lock();
   {
+    if (!s_workout_data.current_workout) {
+      goto unlock;
+    }
     if (event->type == HealthEventMovementUpdate) {
       prv_handle_movement_update(&event->data.movement_update);
     } else if (event->type == HealthEventHeartRateUpdate) {
       prv_handle_heart_rate_update(&event->data.heart_rate_update);
     }
   }
+unlock:
   prv_unlock();
 }
 
 // ---------------------------------------------------------------------------------------
 void workout_service_activity_event_handler(PebbleActivityEvent *event) {
-  if (!workout_service_is_workout_ongoing()) {
-    return;
-  }
-
+  // workout_service_pause_workout is a no-op when no workout is ongoing,
+  // so let it do the check under the lock rather than racing it here.
   if (event->type == PebbleActivityEvent_TrackingStopped) {
     workout_service_pause_workout(true);
   }
@@ -261,18 +260,22 @@ void workout_service_activity_event_handler(PebbleActivityEvent *event) {
 
 // ---------------------------------------------------------------------------------------
 void workout_service_workout_event_handler(PebbleWorkoutEvent *event) {
-  if (!workout_service_is_workout_ongoing()) {
-    return;
+  prv_lock();
+  {
+    if (!s_workout_data.current_workout) {
+      goto unlock;
+    }
+    // Handling this with an event because the timer needs to be called from KernelMain
+    if (event->type == PebbleWorkoutEvent_FrontendOpened) {
+      evented_timer_cancel(s_workout_data.current_workout->workout_abandoned_timer);
+    } else if (event->type == PebbleWorkoutEvent_FrontendClosed) {
+      s_workout_data.current_workout->workout_abandoned_timer =
+          evented_timer_register(WORKOUT_ABANDONED_NOTIFICATION_TIMEOUT_MS, false,
+                                 prv_abandoned_notification_timer_callback, NULL);
+    }
   }
-
-  // Handling this with an event because the timer needs to be called from KernelMain
-  if (event->type == PebbleWorkoutEvent_FrontendOpened) {
-    evented_timer_cancel(s_workout_data.current_workout->workout_abandoned_timer);
-  } else if (event->type == PebbleWorkoutEvent_FrontendClosed) {
-    s_workout_data.current_workout->workout_abandoned_timer =
-        evented_timer_register(WORKOUT_ABANDONED_NOTIFICATION_TIMEOUT_MS, false,
-                               prv_abandoned_notification_timer_callback, NULL);
-  }
+unlock:
+  prv_unlock();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -401,21 +404,23 @@ unlock:
 
 // ---------------------------------------------------------------------------------------
 bool workout_service_pause_workout(bool should_be_paused) {
-  if (workout_service_is_paused() == should_be_paused) {
-    // If no change in state, return early and successful
-    return true;
-  }
-
-  if (!workout_service_is_workout_ongoing()) {
-    PBL_LOG_WRN("Workout (un)pause requested but no workout in progress");
-    return false;
-  }
-
+  bool rv = false;
   prv_lock();
   {
+    if (!s_workout_data.current_workout) {
+      PBL_LOG_WRN("Workout (un)pause requested but no workout in progress");
+      goto unlock;
+    }
+
     CurrentWorkoutData *wrkt_data = s_workout_data.current_workout;
 
-    if (workout_service_is_paused()) {
+    if (wrkt_data->paused == should_be_paused) {
+      // If no change in state, return early and successful
+      rv = true;
+      goto unlock;
+    }
+
+    if (wrkt_data->paused) {
       // We are paused and want to unpause. Add the in progress pause time to the total
       wrkt_data->duration_completed_pauses_s += (rtc_get_time() - wrkt_data->last_paused_utc);
     } else {
@@ -423,53 +428,59 @@ bool workout_service_pause_workout(bool should_be_paused) {
       wrkt_data->last_paused_utc = rtc_get_time();
     }
 
-    s_workout_data.current_workout->paused = should_be_paused;
+    wrkt_data->paused = should_be_paused;
 
     // Update the global duration since we have changed the pause state
     prv_update_duration();
     PBL_LOG_INFO("Paused a workout with type: %d", wrkt_data->type);
     prv_put_event(PebbleWorkoutEvent_Paused);
+    rv = true;
   }
+unlock:
   prv_unlock();
-  return true;
+  return rv;
 }
 
 // ---------------------------------------------------------------------------------------
 bool workout_service_stop_workout(void) {
-  bool rv = true;
+  bool save_session = false;
+  ActivitySession session_to_save;
+  int32_t avg_hr_to_save = 0;
+  int32_t hr_zone_time_s_to_save[HRZoneCount];
+
   prv_lock();
   {
     if (!workout_service_is_workout_ongoing()) {
       PBL_LOG_WRN("No workout in progress");
-      rv = false;
-      goto unlock;
+      prv_unlock();
+      return false;
     }
 
-    // Create an activity session for this workout if it was long enough
-    if (s_workout_data.current_workout->duration_s >= SECONDS_PER_MINUTE) {
-      const time_t len_min =
-          MIN(ACTIVITY_SESSION_MAX_LENGTH_MIN,
-              s_workout_data.current_workout->duration_s / SECONDS_PER_MINUTE);
+    CurrentWorkoutData *wrkt = s_workout_data.current_workout;
 
-      ActivitySession session = {
-        .type = s_workout_data.current_workout->type,
-        .start_utc = s_workout_data.current_workout->start_utc,
+    // Snapshot the session data so we can persist it after dropping the
+    // workout mutex. activity_insights_push_activity_session_notification
+    // creates a notification (blob_db flash write) that can take long enough
+    if (wrkt->duration_s >= SECONDS_PER_MINUTE) {
+      const time_t len_min = MIN(ACTIVITY_SESSION_MAX_LENGTH_MIN,
+                                 wrkt->duration_s / SECONDS_PER_MINUTE);
+      session_to_save = (ActivitySession) {
+        .type = wrkt->type,
+        .start_utc = wrkt->start_utc,
         .length_min = len_min,
         .ongoing = false,
         .manual = true,
-        .step_data.steps = s_workout_data.current_workout->steps,
-        .step_data.distance_meters = s_workout_data.current_workout->distance_m,
-        .step_data.active_kcalories = ROUND(s_workout_data.current_workout->active_calories,
+        .step_data.steps = wrkt->steps,
+        .step_data.distance_meters = wrkt->distance_m,
+        .step_data.active_kcalories = ROUND(wrkt->active_calories,
                                             ACTIVITY_CALORIES_PER_KCAL),
         .step_data.resting_kcalories = ROUND(activity_private_compute_resting_calories(len_min),
                                              ACTIVITY_CALORIES_PER_KCAL),
       };
-      activity_sessions_prv_add_activity_session(&session);
-
-      activity_insights_push_activity_session_notification(rtc_get_time(), &session,
-          prv_get_avg_hr(), s_workout_data.current_workout->hr_zone_time_s);
-
+      avg_hr_to_save = prv_get_avg_hr();
+      memcpy(hr_zone_time_s_to_save, wrkt->hr_zone_time_s, sizeof(hr_zone_time_s_to_save));
       s_workout_data.last_workout_end_ts = time_get_uptime_seconds();
+      save_session = true;
     }
 
     regular_timer_remove_callback(&s_workout_data.second_timer);
@@ -485,16 +496,21 @@ bool workout_service_stop_workout(void) {
                                         WORKOUT_ENDED_HR_SUBSCRIPTION_TS_EXPIRE);
 #endif // CONFIG_HRM
 
-    PBL_LOG_INFO("Stopping a workout with type: %d",
-            s_workout_data.current_workout->type);
+    PBL_LOG_INFO("Stopping a workout with type: %d", wrkt->type);
     prv_put_event(PebbleWorkoutEvent_Stopped);
 
     kernel_free(s_workout_data.current_workout);
     s_workout_data.current_workout = NULL;
   }
-unlock:
   prv_unlock();
-  return rv;
+
+  if (save_session) {
+    activity_sessions_prv_add_activity_session(&session_to_save);
+    activity_insights_push_activity_session_notification(rtc_get_time(), &session_to_save,
+                                                         avg_hr_to_save, hr_zone_time_s_to_save);
+  }
+
+  return true;
 }
 
 // ---------------------------------------------------------------------------------------

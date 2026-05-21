@@ -43,39 +43,17 @@ static const uint16_t protocol_time_endpoint_id = 11;
 
 static RegularTimerInfo s_dst_checker;
 
-//! Migrations for services that use timezone info
-static void prv_migrate_timezone_info(int utc_diff) {
-#ifndef RECOVERY_FW
-  // Since all migrations are to UTC time, we are passed the relative offset from UTC
-  notifications_migrate_timezone(utc_diff);
-  wakeup_migrate_timezone(utc_diff);
-#endif
-}
-
 static time_t prv_migrate_local_time_to_UTC(time_t local_time) {
   return time_local_to_utc(local_time);
 }
 
 // Should only called by prv_update_time_info_and_generate_event()!
 static void prv_handle_timezone_set(TimezoneInfo *tz_info) {
-  // Check if the timezone is set before setting it.  This ensures that this
-  // will only be false once as needed for us to migrate.
-  bool timezone_migration_needed = !clock_is_timezone_set();
-
   time_util_update_timezone(tz_info);
 
   // Update the RTC registers with the latest timezone info
   rtc_set_timezone(tz_info);
 
-  // We are pivoting to UTC from localtime for the first time
-  if (timezone_migration_needed) {
-    time_t t0 = rtc_get_time();
-    time_t t1 = prv_migrate_local_time_to_UTC(t0);
-    rtc_sanitize_time_t(&t1);
-    PBL_LOG_INFO("Pivot RTC from localtime to UTC (%lu -> %lu)", t0, t1);
-    rtc_set_time(t1);  // Pivot RTC from localtime to UTC
-    prv_migrate_timezone_info(tz_info->tm_gmtoff);
-  }
 }
 
 typedef struct PACKED {
@@ -501,12 +479,17 @@ void clock_copy_time_string(char *buffer, uint8_t size) {
   clock_copy_time_string_timestamp(buffer, size, t);
 }
 
+static size_t prv_format_time_tm(char *buffer, int buf_size, const char *format,
+                                 const struct tm *time_tm) {
+  const size_t ret_val = strftime(buffer, buf_size, i18n_get(format, buffer), time_tm);
+  i18n_free(format, buffer);
+  return ret_val;
+}
+
 static size_t prv_format_time(char *buffer, int buf_size, const char *format, time_t timestamp) {
   struct tm time_tm;
   localtime_r(&timestamp, &time_tm);
-  const size_t ret_val = strftime(buffer, buf_size, i18n_get(format, buffer), &time_tm);
-  i18n_free(format, buffer);
-  return ret_val;
+  return prv_format_time_tm(buffer, buf_size, format, &time_tm);
 }
 
 size_t clock_get_time_number(char *number_buffer, size_t number_buffer_size, time_t timestamp) {
@@ -966,6 +949,10 @@ static void prv_clock_get_relative_time_string(char *buffer, int buf_size, time_
 
 size_t clock_get_date(char *buffer, int buf_size, time_t timestamp) {
   return prv_format_time(buffer, buf_size, i18n_noop("%m/%d"), timestamp);
+}
+
+size_t clock_get_date_tm(char *buffer, int buf_size, const struct tm *time_tm) {
+  return prv_format_time_tm(buffer, buf_size, i18n_noop("%m/%d"), time_tm);
 }
 
 size_t clock_get_day_date(char *buffer, int buf_size, time_t timestamp) {

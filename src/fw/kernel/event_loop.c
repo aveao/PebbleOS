@@ -68,7 +68,6 @@
 #include "pbl/services/notifications/alerts_preferences.h"
 #include "pbl/services/notifications/do_not_disturb.h"
 #include "pbl/services/stationary.h"
-#include "pbl/services/timeline/reminders.h"
 #include "pbl/services/wakeup.h"
 #include "pbl/services/runlevel.h"
 #include "shell/normal/app_idle_timeout.h"
@@ -301,7 +300,7 @@ static NOINLINE void prv_minimal_event_handler(PebbleEvent* e) {
       }
 #ifndef RECOVERY_FW
       const bool dnd_suppresses_backlight = do_not_disturb_is_active() &&
-                                           !alerts_preferences_dnd_get_motion_backlight();
+                                           !alerts_preferences_dnd_get_touch_backlight();
       if (dnd_suppresses_backlight) {
         return;
       }
@@ -340,7 +339,7 @@ static NOINLINE void prv_minimal_event_handler(PebbleEvent* e) {
       if (wake_on_gesture) {
 #ifndef RECOVERY_FW
         const bool dnd_suppresses_backlight = do_not_disturb_is_active() &&
-                                             !alerts_preferences_dnd_get_motion_backlight();
+                                             !alerts_preferences_dnd_get_touch_backlight();
         if (!dnd_suppresses_backlight)
 #endif
         {
@@ -356,9 +355,21 @@ static NOINLINE void prv_minimal_event_handler(PebbleEvent* e) {
 
     case PEBBLE_APP_LAUNCH_EVENT:
       if (!app_install_is_app_running(e->launch_app.id)) {
+        const LaunchConfigCommon common =
+            NULL_SAFE_FIELD_ACCESS(e->launch_app.data, common, (LaunchConfigCommon) {});
         process_manager_launch_process(&(ProcessLaunchConfig) {
           .id = e->launch_app.id,
-          .common = NULL_SAFE_FIELD_ACCESS(e->launch_app.data, common, (LaunchConfigCommon) {}),
+          .common = common,
+#if SHELL_SDK
+          // Dev iteration: when the phone sends AppRunStateStart (typically
+          // `pebble install` over pypkjs), force-kill the current app instead
+          // of waiting up to 3s for graceful deinit.  Misbehaving third-party
+          // watchfaces that don't promptly dequeue DEINIT (e.g. blocked inside
+          // a PEBBLE_SET_TIME_EVENT handler triggered by pypkjs's SetUTC right
+          // before install) otherwise stall the install until the dev manually
+          // toggles to the launcher.  Real-user normal shell keeps graceful.
+          .forcefully = (common.reason == APP_LAUNCH_PHONE),
+#endif
         });
       }
       return;
@@ -453,7 +464,6 @@ static NOINLINE void prv_extended_event_handler(PebbleEvent* e) {
 
       // TODO: evaluate if these need to change on every time update
       do_not_disturb_handle_clock_change();
-      reminders_update_timer();
 #endif
       return;
     }

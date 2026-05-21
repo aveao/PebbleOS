@@ -99,7 +99,6 @@ def options(opt):
     opt.recurse('src/fw')
     opt.recurse('src/idl')
     opt.recurse('sdk')
-    opt.recurse('third_party')
     opt.add_option('--board', action='store',
                    choices=[ 'asterix',
                              'obelix_dvt',
@@ -169,6 +168,9 @@ def options(opt):
         help='SDL decoration to use for QEMU. Defaults to the per-board '
              'default (emery: pt2-br, flint: p2d-bk, gabbro: pr2-bk20). '
              'Pass "none" to disable decorations.')
+    opt.add_option('--reconnect', action='store_true',
+        help='Wrap `console` in a keep-alive driver that waits for the '
+             'transport to come up and reconnects if it drops')
     opt.add_option('--screenshot-output', default=None,
         help='Output path for `./waf screenshot` (must end in .png). '
              'Defaults to build/screenshot.png')
@@ -202,9 +204,6 @@ def handle_configure_options(conf):
     if conf.options.noprompt:
         conf.env.append_value('DEFINES', 'DISABLE_PROMPT')
         conf.env.DISABLE_PROMPT = True
-
-    if conf.options.beta or conf.options.release:
-        conf.env.append_value('DEFINES', 'RELEASE')
 
     if conf.options.malloc_instrumentation:
         conf.env.append_value('DEFINES', 'MALLOC_INSTRUMENTATION')
@@ -261,7 +260,7 @@ def handle_configure_options(conf):
 
     if not conf.options.nolog:
         conf.env.append_value('DEFINES', 'PBL_LOG_ENABLED')
-        if not conf.options.nohash and not conf.is_qemu():
+        if not conf.options.nohash and not conf.env.CONFIG_QEMU:
             conf.env.append_value('DEFINES', 'PBL_LOGS_HASHED')
 
     if conf.options.profile_interrupts:
@@ -291,7 +290,7 @@ def handle_configure_options(conf):
         conf.env.NO_LINK = True
         print("Not linking firmware")
 
-    if not conf.options.no_pulse_everywhere and (not conf.options.release or conf.options.mfg):
+    if not conf.options.no_pulse_everywhere and (not conf.env.CONFIG_RELEASE or conf.options.mfg):
         conf.env.append_value('DEFINES', 'PULSE_EVERYWHERE=1')
 
 def configure(conf):
@@ -307,8 +306,7 @@ def configure(conf):
 
     conf.load('kconfig', tooldir='waftools')
 
-    conf.env.QEMU = conf.is_qemu()
-    if conf.is_qemu():
+    if conf.env.CONFIG_QEMU:
         conf.env.QEMU_CPU = conf.get_qemu_cpu()
 
     # Auto-detect JS engine from board capabilities if not explicitly specified
@@ -349,22 +347,13 @@ def configure(conf):
     conf.env.FLASH_ITCM = False
 
     # Set platform used for building the SDK
-    if conf.is_qemu_emery():
+    if conf.env.CONFIG_PLATFORM_EMERY:
         conf.env.PLATFORM_NAME = 'emery'
         conf.env.MIN_SDK_VERSION = 3
-    elif conf.is_qemu_flint():
+    elif conf.env.CONFIG_PLATFORM_FLINT:
         conf.env.PLATFORM_NAME = 'flint'
         conf.env.MIN_SDK_VERSION = 2
-    elif conf.is_qemu_gabbro():
-        conf.env.PLATFORM_NAME = 'gabbro'
-        conf.env.MIN_SDK_VERSION = 4
-    elif conf.is_obelix():
-        conf.env.PLATFORM_NAME = 'emery'
-        conf.env.MIN_SDK_VERSION = 3
-    elif conf.is_asterix():
-        conf.env.PLATFORM_NAME = 'flint'
-        conf.env.MIN_SDK_VERSION = 2
-    elif conf.is_getafix():
+    elif conf.env.CONFIG_PLATFORM_GABBRO:
         conf.env.PLATFORM_NAME = 'gabbro'
         conf.env.MIN_SDK_VERSION = 4
     else:
@@ -372,19 +361,6 @@ def configure(conf):
 
     # Save this for later
     conf.env.BOARD = conf.options.board
-
-    if conf.is_qemu():
-        qemu_cpu = conf.get_qemu_cpu()
-        if qemu_cpu == 'cortex-m4':
-            conf.env.MICRO_FAMILY = 'QEMU_PEBBLE_ARMCM4'
-        else:
-            conf.env.MICRO_FAMILY = 'QEMU_PEBBLE_ARMCM33'
-    elif conf.is_asterix():
-        conf.env.MICRO_FAMILY = 'NRF52'
-    elif conf.is_obelix() or conf.is_getafix():
-        conf.env.MICRO_FAMILY = 'SF32LB52'
-    else:
-        conf.fatal('No micro family specified for {}!'.format(conf.options.board))
 
     conf.env.VARIANT = conf.options.variant
     if conf.env.VARIANT == 'prf':
@@ -401,7 +377,6 @@ def configure(conf):
                       errmsg="Unable to locate the Node command. "
                              "Please check your Node installation and try again.")
 
-    conf.recurse('third_party')
     conf.recurse('src/idl')
     conf.recurse('src/fw')
     conf.recurse('sdk')
@@ -423,7 +398,7 @@ def configure(conf):
     if bt_board is None:
         bt_board = conf.get_board()
     # Select BT controller based on configuration:
-    if conf.is_qemu():
+    if conf.env.CONFIG_QEMU:
         conf.env.bt_controller = 'qemu'
         conf.env.append_value('DEFINES', ['BT_CONTROLLER_QEMU'])
     elif conf.is_asterix():
@@ -567,7 +542,7 @@ def build(bld):
         return
 
     # Do not enable stationary mode in PRF or release firmware
-    if (bld.env.VARIANT != 'prf' and not bld.env.QEMU and bld.env.NORMAL_SHELL != 'sdk'):
+    if (bld.env.VARIANT != 'prf' and not bld.env.CONFIG_QEMU and bld.env.NORMAL_SHELL != 'sdk'):
         bld.env.append_value('DEFINES', 'STATIONARY_MODE')
 
     if bld.variant == 'test':
@@ -660,11 +635,11 @@ def size_resources(ctx):
     if pbpack_path is None:
         ctx.fatal('No resource pbpack found')
 
-    if ctx.env.MICRO_FAMILY == 'NRF52':
+    if ctx.env.CONFIG_SOC_NRF52:
         max_size = 1024 * 1024
-    elif ctx.env.MICRO_FAMILY == 'SF32LB52':
+    elif ctx.env.CONFIG_SOC_SF32LB52:
         max_size = 2048 * 1024
-    elif ctx.env.MICRO_FAMILY.startswith('QEMU_PEBBLE'):
+    elif ctx.env.CONFIG_QEMU:
         max_size = 2048 * 1024
     else:
         max_size = 256 * 1024
@@ -758,7 +733,7 @@ def _make_bundle(ctx, fw_bin_path, fw_type='normal', board=None, resource_path=N
 
     if resource_path is not None:
         b.add_resources(resource_path, version_ts)
-    if 'RELEASE' not in ctx.env.DEFINES and 'PBL_LOGS_HASHED' in ctx.env.DEFINES:
+    if not ctx.env.CONFIG_RELEASE and 'PBL_LOGS_HASHED' in ctx.env.DEFINES:
         loghash_dict = ctx.path.get_bld().make_node(LOGHASH_OUT_PATH).abspath()
         b.add_loghash(loghash_dict)
 
@@ -788,7 +763,7 @@ class BundleCommand(BuildContext):
 def bundle(ctx):
     """bundles a firmware"""
 
-    if ctx.env.QEMU:
+    if ctx.env.CONFIG_QEMU:
         bundle_qemu(ctx)
     elif ctx.env.VARIANT == 'prf':
         _make_bundle(ctx, ctx.get_tintin_fw_node().path_from(ctx.path), fw_type='recovery')
@@ -872,7 +847,7 @@ def _create_spi_flash_image(ctx, name):
 
 def qemu_image_spi(ctx):
     """creates a SPI flash image for qemu"""
-    if ctx.env.MICRO_FAMILY.startswith('QEMU_PEBBLE'):
+    if ctx.env.CONFIG_QEMU:
         # QEMU generic boards: resources at offset 0x620000 in 32MB flash
         resources_begin = 0x620000
         image_size = 0x2000000
@@ -905,7 +880,7 @@ def console(ctx):
     ctx.recurse('platform', mandatory=False)
 
     # miniterm is not made to be used as a python module, so just shell out:
-    if ctx.is_qemu():
+    if ctx.env.CONFIG_QEMU:
         tty = 'socket://%s' % (ctx.options.qemu_host or 'localhost:12345')
     else:
         tty = ctx.options.tty
@@ -914,9 +889,9 @@ def console(ctx):
             return
 
     if _is_pulse_everywhere(ctx):
-        os.system("python ./tools/pulse_console.py -t %s" % tty)
-    elif ctx.is_qemu():
-        os.system("python ./tools/log_hashing/miniterm_co.py %s" % tty)
+        inner = "python ./tools/pulse_console.py -t %s" % tty
+    elif ctx.env.CONFIG_QEMU:
+        inner = "python ./tools/log_hashing/miniterm_co.py %s" % tty
     else:
         baudrate = ctx.options.baudrate or 230400
         # NOTE: force RTS to be de-asserted, as on some boards (e.g.
@@ -924,7 +899,12 @@ def console(ctx):
         # drivers, RTS may activate automatically, as soon as the port is
         # opened. There may be a glitch on RTS when rts is set differently from
         # their default value.
-        os.system("python ./tools/log_hashing/miniterm_co.py %s %d --rts 0" % (tty, baudrate))
+        inner = "python ./tools/log_hashing/miniterm_co.py %s %d --rts 0" % (tty, baudrate)
+
+    if ctx.options.reconnect:
+        os.system("python ./tools/console_keepalive.py -t %s -- %s" % (tty, inner))
+    else:
+        os.system(inner)
 
 
 def qemu(ctx):
@@ -964,7 +944,7 @@ def qemu_launch(ctx):
 
     # Generic QEMU machines: load firmware as kernel (ELF for proper vector table handling)
     fw_elf = ctx.get_tintin_fw_node().change_ext('.elf')
-    has_audio = ctx.is_qemu_emery() or ctx.is_qemu_flint()
+    has_audio = ctx.env.CONFIG_PLATFORM_EMERY or ctx.env.CONFIG_PLATFORM_FLINT
     if has_audio:
         import platform
         audio_driver = 'coreaudio' if platform.system() == 'Darwin' else 'sdl'
@@ -1018,7 +998,7 @@ def debug(ctx, fw_elf=None, cfg_file='openocd.cfg', is_ble=False):
     if fw_elf is None:
         fw_elf = ctx.get_tintin_fw_node().change_ext('.elf')
 
-    if ctx.is_qemu():
+    if ctx.env.CONFIG_QEMU:
         cmd_line = "python ./tools/qemu/qemu_gdb_proxy.py --port=1233 --target=localhost:1234"
         proc = pexpect.spawn(cmd_line, logfile=sys.stdout, encoding='utf-8')
         proc.expect(["Connected to target", pexpect.TIMEOUT], timeout=10)
@@ -1102,7 +1082,7 @@ def _is_pulse_everywhere(ctx):
 
 
 def _get_pulse_flash_tool(ctx):
-    if ctx.env.MICRO_FAMILY == 'SF32LB52' and not ctx.options.force_pulse:
+    if ctx.env.CONFIG_SOC_SF32LB52 and not ctx.options.force_pulse:
         return "sftool_flash_imaging"
     if _is_pulse_everywhere(ctx) or ctx.options.force_pulse:
         return "pulse_flash_imaging"
@@ -1156,26 +1136,22 @@ def _check_firmware_image_size(ctx, path):
     BYTES_PER_K = 1024
     firmware_size = os.path.getsize(path)
     # Determine flash and bootloader size so we can calculate the max firmware size
-    if ctx.env.MICRO_FAMILY == 'NRF52':
+    if ctx.env.CONFIG_SOC_NRF52:
         if ctx.env.VARIANT == 'prf' and not ctx.env.IS_MFG:
             max_firmware_size = 512 * BYTES_PER_K
         else:
             # 1024k of flash and 32k bootloader
             max_firmware_size = (1024 - 32) * BYTES_PER_K
-    elif ctx.env.MICRO_FAMILY == 'SF32LB52':
+    elif ctx.env.CONFIG_SOC_SF32LB52:
         if ctx.env.VARIANT == 'prf' and not ctx.env.IS_MFG:
             max_firmware_size = 576 * BYTES_PER_K
         else:
             # 3072k of flash
             max_firmware_size = 3072 * BYTES_PER_K
-    elif ctx.env.MICRO_FAMILY.startswith('QEMU_PEBBLE'):
+    elif ctx.env.CONFIG_QEMU:
         max_firmware_size = 4096 * BYTES_PER_K
     else:
-        ctx.fatal('Cannot check firmware size against unknown micro family "{}"'
-                  .format(ctx.env.MICRO_FAMILY))
-
-    if ctx.env.QEMU and not ctx.env.MICRO_FAMILY.startswith('QEMU_PEBBLE'):
-        max_firmware_size = (4096 - 16) * BYTES_PER_K
+        ctx.fatal('Cannot check firmware size against unknown micro family')
 
     if firmware_size > max_firmware_size:
         raise FirmwareTooLargeException('Firmware is too large! Size is 0x%x should be less than 0x%x' \

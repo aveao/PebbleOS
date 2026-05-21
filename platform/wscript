@@ -40,10 +40,6 @@ def is_qemu_gabbro(ctx):
     return ctx.get_board() == 'qemu_gabbro'
 
 @conf
-def is_qemu(ctx):
-    return ctx.get_board().startswith('qemu_')
-
-@conf
 def get_platform_name(ctx):
     if is_qemu_emery(ctx):
         return "qemu_emery"
@@ -91,7 +87,7 @@ def get_qemu_cpu(ctx):
 
 @conf
 def get_qemu_spi_flash_args(ctx, spi_flash_path):
-    if is_qemu(ctx):
+    if ctx.env.CONFIG_QEMU:
         return ['-drive', 'if=mtd,format=raw,file={}'.format(spi_flash_path)]
     else:
         return None
@@ -113,39 +109,23 @@ def capability(ctx, capability_str):
 @conf
 def add_platform_defines(ctx, env):
     if ctx.is_qemu_emery():
-        bit_depth = 8
         platform = 'QEMU_EMERY'
     elif ctx.is_qemu_flint():
-        bit_depth = 1
         platform = 'QEMU_FLINT'
     elif ctx.is_qemu_gabbro():
-        bit_depth = 8
         platform = 'QEMU_GABBRO'
     elif ctx.is_asterix():
-        bit_depth = 1
         platform = 'ASTERIX'
     elif ctx.is_obelix():
-        bit_depth = 8
         platform = 'OBELIX'
     elif ctx.is_getafix():
-        bit_depth = 8
         platform = 'GETAFIX'
     else:
         ctx.fatal('No platform specified for {}!'.format(ctx.options.board))
 
     defines = ['BOARD_{}=1'.format(ctx.options.board.upper()),
                'PLATFORM_{}=1'.format(platform),
-               'MICRO_FAMILY_{}=1'.format(env.MICRO_FAMILY),
-               'SCREEN_COLOR_DEPTH_BITS={}'.format(bit_depth),
                'MIN_SDK_VERSION={}'.format(env.MIN_SDK_VERSION)]
-    # Add umbrella MICRO_FAMILY_QEMU define for all QEMU boards
-    if env.MICRO_FAMILY.startswith('QEMU_PEBBLE'):
-        defines.append('MICRO_FAMILY_QEMU=1')
-    # MPU architecture: ARMv8-M for Cortex-M33-based families, ARMv7-M otherwise.
-    if env.MICRO_FAMILY in ('SF32LB52', 'QEMU_PEBBLE_ARMCM33'):
-        defines.append('MPU_TYPE_ARMV8M=1')
-    else:
-        defines.append('MPU_TYPE_ARMV7M=1')
     env.append_value('DEFINES', defines)
 
     for cap, val in ctx.capabilities_dict().items():
