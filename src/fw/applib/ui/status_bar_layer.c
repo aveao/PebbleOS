@@ -343,7 +343,17 @@ static void prv_status_bar_layer_render_text(GContext *ctx,
     // Gothic's top leading so the glyph looks optically centered; this can
     // produce a slightly negative y, which the draw context clips (intentional
     // — tune against QEMU screenshots if it reads high/low).
-    y = min_y + (max_y - min_y - font_height) / 2 - (font_height - 4) / 4;
+    // gabbro's round display needs a few extra px so the time clears the curve.
+    const PlatformType platform = process_manager_current_platform();
+    const int16_t large_bold_y_nudge = PBL_PLATFORM_SWITCH(platform,
+        /*aplite*/ 0,
+        /*basalt*/ 0,
+        /*chalk*/ 0,
+        /*diorite*/ 0,
+        /*emery*/ 0,
+        /*flint*/ 0,
+        /*gabbro*/ 3);
+    y = min_y + (max_y - min_y - font_height) / 2 - (font_height - 4) / 4 + large_bold_y_nudge;
   } else {
     // Default: bottom-aligned with separator-area padding.
     y = min_y + max_y - (2 * STATUS_BAR_LAYER_SEPARATOR_Y_OFFSET) - font_height;
