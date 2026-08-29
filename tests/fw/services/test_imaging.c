@@ -122,6 +122,38 @@ static void prv_receive(const uint8_t *msg, size_t length) {
 static const uint8_t s_palette[] = { 0xC0, 0xF0, 0xFF };
 static const uint8_t s_pixels[] = { 0x01, 0x20, 0x12, 0x01 };
 
+//! A 16x8 4-bpp image: row size 8, 64 pixel bytes. Repetitive, so its raw-DEFLATE encoding is
+//! genuinely smaller than the pixels and the transfer is accepted.
+static const uint8_t s_deflate_pixels[64] = {
+  0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34,
+  0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34,
+  0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34,
+  0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34,
+  0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34,
+  0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34,
+  0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34,
+  0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34
+};
+static const uint8_t s_deflate_stream[] = { 0x13, 0x32, 0x11, 0xa2, 0x08, 0x02, 0x00 };
+
+//! First chunk of a deflated response: the usual image header and palette, then the compressed
+//! stream's length, then `data_len` bytes of it.
+static size_t prv_build_deflated_first(uint8_t *out, uint8_t token, uint8_t flags,
+                                       uint16_t chunk_len_field, uint16_t width, uint16_t height,
+                                       const uint8_t *palette, uint8_t palette_count,
+                                       uint32_t compressed_len, const uint8_t *data,
+                                       size_t data_len) {
+  const size_t head = prv_build_response(out, token, flags | ImagingResponseFlagFirst, 0,
+                                         chunk_len_field, width, height,
+                                         ImagingFormat4BitPaletteDeflate, palette, palette_count,
+                                         NULL, 0);
+  uint8_t *cursor = out + head;
+  memcpy(cursor, &compressed_len, sizeof(compressed_len));
+  cursor += sizeof(compressed_len);
+  memcpy(cursor, data, data_len);
+  return (cursor - out) + data_len;
+}
+
 static void prv_receive_valid_image(uint8_t token) {
   uint8_t buf[64];
   const size_t len = prv_build_response(
@@ -332,7 +364,7 @@ void test_imaging__request_payload_format(void) {
   cl_assert(imaging_request_album_art(7, ImagingFormat4BitPalette, 166, 166, "Title", "Artist"));
   fake_comm_session_process_send_next();
   const uint8_t expected[] = {
-    0x01, 7, 0x00, 0x02, 166, 0, 166, 0,
+    0x01, 7, 0x00, 0x03, 166, 0, 166, 0,
     5, 'T', 'i', 't', 'l', 'e',
     6, 'A', 'r', 't', 'i', 's', 't',
   };
@@ -345,7 +377,7 @@ void test_imaging__notification_request_payload_format(void) {
   cl_assert(imaging_request_notification_image(9, ImagingFormat4BitPalette, 180, 135, &id));
   fake_comm_session_process_send_next();
   const uint8_t expected[] = {
-    0x01, 9, 0x01, 0x02, 180, 0, 135, 0,
+    0x01, 9, 0x01, 0x03, 180, 0, 135, 0,
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
     0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
   };
@@ -396,4 +428,80 @@ void test_imaging__unsupported_latches_per_type(void) {
   cl_assert_equal_i(s_notif_deliveries, 1);
   cl_assert(!imaging_is_type_supported(ImagingImageTypeNotification));
   cl_assert(imaging_is_type_supported(ImagingImageTypeAlbumArt));
+}
+
+void test_imaging__deflated_image(void) {
+  uint8_t buf[128];
+  const size_t len = prv_build_deflated_first(
+      buf, TEST_TOKEN, ImagingResponseFlagLast, sizeof(s_deflate_stream), 16, 8,
+      s_palette, sizeof(s_palette), sizeof(s_deflate_stream),
+      s_deflate_stream, sizeof(s_deflate_stream));
+  prv_receive(buf, len);
+  cl_assert_equal_i(s_deliveries, 1);
+  cl_assert(s_last_bitmap != NULL);
+  cl_assert_equal_i(s_last_bitmap->bounds.size.w, 16);
+  cl_assert_equal_i(s_last_bitmap->bounds.size.h, 8);
+  cl_assert_equal_i(s_last_bitmap->row_size_bytes, 8);
+  cl_assert_equal_i(s_last_bitmap->info.format, GBitmapFormat4BitPalette);
+  cl_assert(memcmp(s_last_bitmap->addr, s_deflate_pixels, sizeof(s_deflate_pixels)) == 0);
+  cl_assert_equal_i(((GColor *)s_last_bitmap->palette)[1].argb, s_palette[1]);
+}
+
+void test_imaging__deflated_multi_chunk_image(void) {
+  uint8_t buf[128];
+  // Offsets and chunk lengths count compressed bytes, not pixels.
+  size_t len = prv_build_deflated_first(buf, TEST_TOKEN, 0, 4, 16, 8,
+                                        s_palette, sizeof(s_palette), sizeof(s_deflate_stream),
+                                        s_deflate_stream, 4);
+  prv_receive(buf, len);
+  cl_assert_equal_i(s_deliveries, 0);
+  len = prv_build_response(buf, TEST_TOKEN, ImagingResponseFlagLast, 4,
+                           sizeof(s_deflate_stream) - 4, 0, 0, 0, NULL, 0,
+                           s_deflate_stream + 4, sizeof(s_deflate_stream) - 4);
+  prv_receive(buf, len);
+  cl_assert_equal_i(s_deliveries, 1);
+  cl_assert(s_last_bitmap != NULL);
+  cl_assert(memcmp(s_last_bitmap->addr, s_deflate_pixels, sizeof(s_deflate_pixels)) == 0);
+}
+
+void test_imaging__deflated_not_smaller_rejected(void) {
+  uint8_t buf[256];
+  // A stream claiming to be at least as big as the pixels it inflates to is malformed: the phone
+  // sends the pixels uncompressed in that case.
+  uint8_t padded[64] = { 0 };
+  memcpy(padded, s_deflate_stream, sizeof(s_deflate_stream));
+  const size_t len = prv_build_deflated_first(
+      buf, TEST_TOKEN, ImagingResponseFlagLast, sizeof(padded), 16, 8,
+      s_palette, sizeof(s_palette), sizeof(padded), padded, sizeof(padded));
+  prv_receive(buf, len);
+  cl_assert_equal_i(s_deliveries, 0);
+}
+
+void test_imaging__deflated_truncated_length_rejected(void) {
+  uint8_t buf[128];
+  const size_t len = prv_build_deflated_first(
+      buf, TEST_TOKEN, ImagingResponseFlagLast, sizeof(s_deflate_stream), 16, 8,
+      s_palette, sizeof(s_palette), sizeof(s_deflate_stream),
+      s_deflate_stream, sizeof(s_deflate_stream));
+  // Cut the message inside the compressed-length field that follows the palette
+  prv_receive(buf, len - sizeof(s_deflate_stream) - 2);
+  cl_assert_equal_i(s_deliveries, 0);
+}
+
+void test_imaging__deflated_corrupt_stream_rejected(void) {
+  uint8_t buf[128];
+  // An invalid block type: inflating fails outright
+  const uint8_t garbage[] = { 0xff, 0xff, 0xff, 0xff };
+  size_t len = prv_build_deflated_first(
+      buf, TEST_TOKEN, ImagingResponseFlagLast, sizeof(garbage), 16, 8,
+      s_palette, sizeof(s_palette), sizeof(garbage), garbage, sizeof(garbage));
+  prv_receive(buf, len);
+  cl_assert_equal_i(s_deliveries, 0);
+
+  // A valid prefix that inflates to fewer bytes than the dimensions call for
+  len = prv_build_deflated_first(
+      buf, TEST_TOKEN, ImagingResponseFlagLast, 3, 16, 8,
+      s_palette, sizeof(s_palette), 3, s_deflate_stream, 3);
+  prv_receive(buf, len);
+  cl_assert_equal_i(s_deliveries, 0);
 }

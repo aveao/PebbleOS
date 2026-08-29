@@ -86,6 +86,7 @@ clar(ctx,
 clar(ctx,
     sources_ant_glob = \
         " tests/fakes/fake_session.c" \
+        " src/fw/applib/vendor/tinflate/tinflate.c" \
         " src/fw/services/imaging/imaging.c",
     test_sources_ant_glob = "test_imaging.c")
 

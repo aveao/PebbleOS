@@ -4,6 +4,7 @@
 #include "pbl/services/imaging.h"
 
 #include "applib/graphics/gtypes.h"
+#include "applib/vendor/tinflate/tinflate.h"
 #include "kernel/pbl_malloc.h"
 #include "pbl/os/mutex.h"
 #include "pbl/services/comm_session/session.h"
@@ -35,12 +36,14 @@ static CommSession *s_latched_session;
 
 static struct {
   bool active;
+  bool deflated;    // pixels arrive raw-DEFLATE compressed and are inflated on the last chunk
   uint8_t token;
   GBitmapFormat format;
   uint16_t width;
   uint16_t height;
   uint16_t row_size_bytes;
-  uint32_t total_bytes;
+  uint32_t total_bytes;     // bytes to receive over the wire
+  uint32_t inflated_bytes;  // size of the finished pixel buffer
   uint32_t received_bytes;
   uint8_t *pixels;
   GColor *palette;  // NULL for non-palette formats
@@ -104,6 +107,17 @@ bool imaging_is_type_supported(ImagingImageType image_type) {
   return !latched;
 }
 
+static bool prv_format_is_deflate(ImagingFormat format) {
+  return format == ImagingFormat4BitPaletteDeflate;
+}
+
+//! The format to ask for on the wire. The watch can inflate, so request the compressed encoding
+//! wherever one exists; a phone predating it ignores the field and answers uncompressed, which the
+//! response header still describes.
+static ImagingFormat prv_requested_format(ImagingFormat format) {
+  return (format == ImagingFormat4BitPalette) ? ImagingFormat4BitPaletteDeflate : format;
+}
+
 bool imaging_request_album_art(uint8_t token, ImagingFormat format, uint16_t width, uint16_t height,
                                const char *title, const char *artist) {
   if (!imaging_is_type_supported(ImagingImageTypeAlbumArt)) {
@@ -117,7 +131,7 @@ bool imaging_request_album_art(uint8_t token, ImagingFormat format, uint16_t wid
   hdr->cmd = ImagingCmdIDRequest;
   hdr->token = token;
   hdr->image_type = ImagingImageTypeAlbumArt;
-  hdr->format = format;
+  hdr->format = prv_requested_format(format);
   hdr->width = width;
   hdr->height = height;
   uint8_t *cursor = payload + sizeof(*hdr);
@@ -144,7 +158,7 @@ bool imaging_request_notification_image(uint8_t token, ImagingFormat format, uin
   hdr->cmd = ImagingCmdIDRequest;
   hdr->token = token;
   hdr->image_type = ImagingImageTypeNotification;
-  hdr->format = format;
+  hdr->format = prv_requested_format(format);
   hdr->width = width;
   hdr->height = height;
   memcpy(payload + sizeof(*hdr), item_id, UUID_SIZE);
@@ -160,6 +174,7 @@ static uint16_t prv_gbitmap_format_for(ImagingFormat format, GBitmapFormat *out)
       *out = GBitmapFormat8Bit;
       return 0;  // no palette
     case ImagingFormat4BitPalette:
+    case ImagingFormat4BitPaletteDeflate:
       *out = GBitmapFormat4BitPalette;
       return IMAGING_PALETTE_ENTRIES;
     case ImagingFormat1Bit:
@@ -220,12 +235,31 @@ void imaging_protocol_msg_callback(CommSession *session, const uint8_t *msg, siz
     if (cursor + palette_count > msg_end) {
       return;
     }
+    const uint8_t *palette = cursor;
+    cursor += palette_count;
+
     const uint16_t row_size = gbitmap_format_get_row_size_bytes(width, gformat);
     const uint32_t total = (uint32_t)row_size * height;
     if (total == 0 || total > IMAGING_MAX_BYTES) {
       return;
     }
-    s_rx.pixels = kernel_zalloc(total);
+    // A deflated stream declares its own length; the pixel count above is what it inflates to.
+    uint32_t transfer = total;
+    if (prv_format_is_deflate(format)) {
+      if (cursor + sizeof(transfer) > msg_end) {
+        return;
+      }
+      memcpy(&transfer, cursor, sizeof(transfer));
+      cursor += sizeof(transfer);
+      // The phone sends the pixels uncompressed whenever deflating them doesn't pay, so a stream
+      // that isn't smaller is malformed. Rejecting it also bounds the peak of holding the
+      // compressed and inflated buffers at once.
+      if (transfer == 0 || transfer >= total) {
+        return;
+      }
+    }
+
+    s_rx.pixels = kernel_zalloc(transfer);
     if (!s_rx.pixels) {
       prv_rx_reset();
       return;
@@ -237,17 +271,18 @@ void imaging_protocol_msg_callback(CommSession *session, const uint8_t *msg, siz
         return;
       }
       for (uint8_t i = 0; i < palette_count; ++i) {
-        s_rx.palette[i] = (GColor) { .argb = cursor[i] };
+        s_rx.palette[i] = (GColor) { .argb = palette[i] };
       }
-      cursor += palette_count;
     }
     s_rx.active = true;
+    s_rx.deflated = prv_format_is_deflate(format);
     s_rx.token = hdr->token;
     s_rx.format = gformat;
     s_rx.width = width;
     s_rx.height = height;
     s_rx.row_size_bytes = row_size;
-    s_rx.total_bytes = total;
+    s_rx.total_bytes = transfer;
+    s_rx.inflated_bytes = total;
     s_rx.received_bytes = 0;
   }
 
@@ -273,12 +308,29 @@ void imaging_protocol_msg_callback(CommSession *session, const uint8_t *msg, siz
       prv_rx_reset();
       return;
     }
+    // For a deflated transfer s_rx.pixels holds the compressed stream; the bitmap gets a second
+    // buffer with the inflated pixels and prv_rx_reset frees the compressed one.
+    uint8_t *pixels = s_rx.pixels;
+    if (s_rx.deflated) {
+      pixels = kernel_zalloc(s_rx.inflated_bytes);
+      unsigned int inflated = s_rx.inflated_bytes;
+      if (!pixels ||
+          tinflate_uncompress(pixels, &inflated, s_rx.pixels, s_rx.total_bytes) != TINF_OK ||
+          inflated != s_rx.inflated_bytes) {
+        kernel_free(pixels);
+        prv_rx_reset();
+        return;
+      }
+    }
     GBitmap *bmp = kernel_zalloc(sizeof(GBitmap));
     if (!bmp) {
+      if (s_rx.deflated) {
+        kernel_free(pixels);
+      }
       prv_rx_reset();
       return;
     }
-    bmp->addr = s_rx.pixels;
+    bmp->addr = pixels;
     bmp->row_size_bytes = s_rx.row_size_bytes;
     bmp->info.format = s_rx.format;
     bmp->info.version = GBITMAP_VERSION_CURRENT;
@@ -286,7 +338,9 @@ void imaging_protocol_msg_callback(CommSession *session, const uint8_t *msg, siz
     bmp->palette = s_rx.palette;
     // Ownership of the pixel and palette buffers moves into the bitmap.
     const uint8_t token = s_rx.token;
-    s_rx.pixels = NULL;
+    if (!s_rx.deflated) {
+      s_rx.pixels = NULL;
+    }
     s_rx.palette = NULL;
     prv_rx_reset();
     prv_deliver(token, type, bmp);

@@ -34,6 +34,10 @@ typedef enum {
   ImagingFormat1Bit = 0x00,        //!< 1-bpp black & white.
   ImagingFormat8BitColor = 0x01,   //!< 8-bpp GColor8.
   ImagingFormat4BitPalette = 0x02, //!< 4-bpp palettized GColor8 (up to 16 colours).
+  //! As ImagingFormat4BitPalette, but the pixel stream is raw-DEFLATE compressed. Requesting it
+  //! tells the phone the watch can inflate; the phone may still answer with the uncompressed
+  //! format, and does whenever compressing wouldn't shrink the image.
+  ImagingFormat4BitPaletteDeflate = 0x03,
 } ImagingFormat;
 
 //! Watch -> Phone. Fixed head, then type-specific parameters.
@@ -81,4 +85,7 @@ typedef struct PACKED {
   //   uint8_t  format;          // ImagingFormat
   //   uint8_t  palette_count;   // palette formats only: 1..16 (0 for non-palette)
   //   uint8_t  palette[palette_count];  // GColor8 entries
+  //   uint32_t compressed_len;  // deflated formats only: bytes in the compressed stream, which
+  //                             // is what `offset` and `chunk_len` count. The pixel count implied
+  //                             // by width/height/format is what it inflates to.
 } ImagingResponseHeader;
