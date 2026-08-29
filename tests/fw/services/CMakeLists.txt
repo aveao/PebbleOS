@@ -98,6 +98,7 @@ pbl_clar_test(test_imaging
   SOURCES
     tests/fakes/fake_session.c
     src/fw/services/imaging/imaging.c
+    src/fw/applib/vendor/tinflate/tinflate.c
 )
 
 pbl_clar_test(test_compass_cal
