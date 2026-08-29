@@ -158,3 +158,8 @@ pbl_clar_test(test_template_string
     src/fw/applib/template_string.c
   OVERRIDES dummy_board
 )
+
+pbl_clar_test(test_tinflate
+  SOURCES
+    src/fw/applib/vendor/tinflate/tinflate.c
+)
